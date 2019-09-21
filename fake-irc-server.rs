@@ -61,6 +61,7 @@ macro_rules! send_message {
 const SERVER: &str = "127.0.0.1";
 const PROGRAMVER: &str = "fake-irc-server-v0.1.0";
 
+
 fn main() {
     let mut args = std::env::args();
     // ignore program name
@@ -88,6 +89,7 @@ fn main() {
         try_expect!(h.join(), "Got an error on one of the thread handle");
     }
 }
+
 
 fn process_stream(stream: TcpStream, port: usize) {
     debug!("=== Getting new incoming connection");
@@ -144,8 +146,7 @@ fn process_stream(stream: TcpStream, port: usize) {
             },
             IrcMessage { command, params, .. } if upcase_eq(&command, "PING") => {
                 send_message!(reader.get_mut(),
-                              ":{server} PONG {param}",
-                              server=SERVER,
+                              ":localhost PONG {param}",
                               param=get_or_default(params, 0)
                 );
             },
@@ -199,6 +200,9 @@ fn process_stream(stream: TcpStream, port: usize) {
         }
     }
 
+
+    // helper functions
+
     fn get_or_default(v: &[String], i: usize) -> String {
         v.get(i).cloned().unwrap_or_default()
     }
@@ -208,6 +212,7 @@ fn process_stream(stream: TcpStream, port: usize) {
     }
 }
 
+
 #[derive(Debug)]
 struct IrcMessage {
     tag: Option<String>,
@@ -215,6 +220,7 @@ struct IrcMessage {
     command: String,
     params: Vec<String>,
 }
+
 
 #[derive(Debug)]
 enum IrcError {
@@ -233,15 +239,18 @@ impl IrcMessage {
             None => return Err(NoCommand),
         };
         let params = parser.parse_params();
+
         Ok(IrcMessage { tag, prefix, command, params })
     }
 }
+
 
 struct IrcParser<'a> {
     iter: Peekable<CharIndices<'a>>,
     input: &'a str,
     marker: usize,
 }
+
 
 impl<'a> IrcParser<'a> {
     fn new(input: &'a str) -> IrcParser<'a> {
@@ -251,6 +260,7 @@ impl<'a> IrcParser<'a> {
             marker: 0,
         }
     }
+
     fn skip_whitespace(&mut self) {
         while let Some(c) = self.peek() {
             if !c.is_ascii_whitespace() {
@@ -259,6 +269,7 @@ impl<'a> IrcParser<'a> {
             self.consume_char();
         }
     }
+
     fn skip_word(&mut self) {
         while let Some(c) = self.peek() {
             if c.is_ascii_whitespace() {
@@ -267,9 +278,11 @@ impl<'a> IrcParser<'a> {
             self.consume_char();
         }
     }
+
     fn peek(&mut self) -> Option<char> {
         self.iter.peek().map(|&(_, c)| c)
     }
+
     fn consume_char(&mut self) {
         self.iter.next();
 
@@ -282,9 +295,10 @@ impl<'a> IrcParser<'a> {
 
     fn parse_word_if_start_with(&mut self, start_char: char) -> Option<String> {
         self.skip_whitespace();
-        let start = self.marker;
         match self.peek() {
             Some(c) if c == start_char => {
+                self.consume_char(); // don't include the starting character
+                let start = self.marker;
                 self.skip_word();
                 let end = self.marker;
                 Some(self.input[start..end].to_string())
