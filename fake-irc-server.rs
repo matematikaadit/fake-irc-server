@@ -24,9 +24,12 @@
 
 use std::io::{Write, BufRead};
 use std::io::BufReader;
+use std::io;
 use std::net::{TcpStream, TcpListener};
 use std::iter::Peekable;
 use std::str::CharIndices;
+use std::thread;
+use std::sync::mpsc::{self, Sender, Receiver, TryRecvError};
 
 
 macro_rules! try_expect {
@@ -78,20 +81,20 @@ fn main() {
         "Can't create TcpListener"
     );
 
-    let mut handles = Vec::new();
-    for stream in listener.incoming() {
-        let stream = try_expect!(stream, "Error on incoming stream");
-        let h = std::thread::spawn(move || process_stream(stream, port));
-        handles.push(h);
-    }
+    let (sender, receiver) = mpsc::channel();
 
-    for h in handles {
-        try_expect!(h.join(), "Got an error on one of the thread handle");
+    thread::spawn(move || process_stdin(receiver));
+
+    // the Incoming iterator never return None, so this will loop forever
+    for stream in listener.incoming() {
+        let sender = sender.clone();
+        let stream = try_expect!(stream, "Error on incoming stream");
+        thread::spawn(move || process_stream(stream, port, sender));
     }
 }
 
 
-fn process_stream(stream: TcpStream, port: usize) {
+fn process_stream(stream: TcpStream, port: usize, sender: Sender<TcpStream>) {
     debug!("=== Getting new incoming connection");
 
     let mut buff = String::new();
@@ -197,6 +200,11 @@ fn process_stream(stream: TcpStream, port: usize) {
 
                 registration_finished = true;
                 // we are done here, don't send this message again
+
+                // send this stream to the process_input() after the handshake finished
+                if let Ok(stream) = reader.get_ref().try_clone() {
+                    let _ = sender.send(stream); // ignore sending error
+                }
             },
             _ => (),
         }
@@ -207,6 +215,36 @@ fn process_stream(stream: TcpStream, port: usize) {
 
     fn upcase_eq(left: &str, right: &str) -> bool {
         &left.to_ascii_uppercase() == right
+    }
+}
+
+
+fn process_stdin(receiver: Receiver<TcpStream>) {
+    let mut streams = Vec::new();
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        // ignore line error
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+
+        // read all received stream until there's none left in the channel
+        loop {
+            match receiver.try_recv() {
+                Ok(s) => streams.push(s),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    eprintln!("TcpStream receiver is disconnected");
+                    return;
+                }
+            }
+        }
+
+        // send input to any stream that we read
+        for s in &mut streams {
+            send_message!(s, "{}", line);
+        }
     }
 }
 
