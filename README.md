@@ -24,6 +24,10 @@ Now you can connect to the localhost, port 1234, from your IRC client. For examp
 /connect localhost:1234
 ```
 
+On the fake server stdin, you can type any message to be sent to all connected client. For example, typing:
+`:bot!bot@localhost JOIN #test` will cause any connected client to receive that message.
+
+
 # LICENSE
 
 MIT LICENSE

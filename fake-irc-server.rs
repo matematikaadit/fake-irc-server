@@ -85,7 +85,7 @@ fn main() {
 
     thread::spawn(move || process_stdin(receiver));
 
-    // the Incoming iterator never return None, so this will loop forever
+    // This will loop forever
     for stream in listener.incoming() {
         let sender = sender.clone();
         let stream = try_expect!(stream, "Error on incoming stream");
@@ -94,6 +94,9 @@ fn main() {
 }
 
 
+/// Process any incoming IRC connection. Automatically reply any PING message with a PONG.
+/// Process registratioin handshake by sending the 001 002 003 004 and 005 numeric reply
+/// to the client.
 fn process_stream(stream: TcpStream, port: usize, sender: Sender<TcpStream>) {
     debug!("=== Getting new incoming connection");
 
@@ -130,32 +133,30 @@ fn process_stream(stream: TcpStream, port: usize, sender: Sender<TcpStream>) {
             },
         }
 
-        debug!("=== Line: {}", buff);
-
         let message = match IrcMessage::new(&buff) {
             Ok(m) => m,
             Err(_) => continue, // ignore message error; for now
         };
 
-        debug!("=== Message: {:?}", message);
-
         match &message {
             IrcMessage { command, params, .. } if upcase_eq(&command, "NICK") => {
                 nick = params.get(0).cloned();
+                debug!("=== Message: {:?}", message);
             },
             IrcMessage { command, params, .. } if upcase_eq(&command, "USER") => {
                 user = params.get(0).cloned();
                 real = params.get(3).cloned();
+                debug!("=== Message: {:?}", message);
             },
             IrcMessage { command, params, .. } if upcase_eq(&command, "PING") => {
                 let param = params.get(0).cloned().unwrap_or_default();
 
-                send_message!(reader.get_mut(),
-                              ":localhost PONG {param}",
-                              param=param
+                try_expect!(
+                    write!(reader.get_mut(), ":localhost PONG {param}", param=param),
+                    "Can't write to the TcpStream"
                 );
             },
-            _ => (),
+            message => debug!("=== Message: {:?}", message),
         }
 
         if registration_finished {
@@ -198,13 +199,13 @@ fn process_stream(stream: TcpStream, port: usize, sender: Sender<TcpStream>) {
                               nick=nick
                 );
 
-                registration_finished = true;
-                // we are done here, don't send this message again
-
                 // send this stream to the process_input() after the handshake finished
                 if let Ok(stream) = reader.get_ref().try_clone() {
                     let _ = sender.send(stream); // ignore sending error
                 }
+
+                // we are done here, don't send this message again
+                registration_finished = true;
             },
             _ => (),
         }
@@ -219,6 +220,7 @@ fn process_stream(stream: TcpStream, port: usize, sender: Sender<TcpStream>) {
 }
 
 
+/// Handle input from the user. Send it to all connected client.
 fn process_stdin(receiver: Receiver<TcpStream>) {
     let mut streams = Vec::new();
     let stdin = io::stdin();
@@ -229,19 +231,20 @@ fn process_stdin(receiver: Receiver<TcpStream>) {
             Err(_) => continue,
         };
 
-        // read all received stream until there's none left in the channel
+        // Read all received stream until there's none left in the channel. It's a nonblocking operation,
+        // hence we stop reading when the receiver is empty (TryRecvError::Empty).
         loop {
             match receiver.try_recv() {
                 Ok(s) => streams.push(s),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    eprintln!("TcpStream receiver is disconnected");
+                    eprintln!("Disconnected receiver");
                     return;
                 }
             }
         }
 
-        // send input to any stream that we read
+        // send input to all connected stream
         for s in &mut streams {
             send_message!(s, "{}", line);
         }
@@ -249,6 +252,12 @@ fn process_stdin(receiver: Receiver<TcpStream>) {
 }
 
 
+//==== Parsing IRC Message ====
+// A rather simple parser for IRC protocol.
+
+
+/// Simple struct that represents the parsed IRC message.
+/// For simplicity sake, we use owned string. It should be possible in theory to use a &str instead.
 #[derive(Debug)]
 struct IrcMessage {
     tag: Option<String>,
@@ -258,12 +267,15 @@ struct IrcMessage {
 }
 
 
+/// Error type when parsing the message.
 #[derive(Debug)]
 enum IrcError {
     NoCommand,
 }
 
 impl IrcMessage {
+    /// Create new IrcMessage from the input string.
+    /// Error when there's no command in the message.
     fn new(input: &str) -> Result<Self, IrcError> {
         use IrcError::*;
 
@@ -281,6 +293,7 @@ impl IrcMessage {
 }
 
 
+/// A rather simple parser. We save the input and a marker to the portion of the input that hasn't been read.
 struct IrcParser<'a> {
     iter: Peekable<CharIndices<'a>>,
     input: &'a str,
@@ -289,6 +302,9 @@ struct IrcParser<'a> {
 
 
 impl<'a> IrcParser<'a> {
+    /// Create new parser from the input.
+    /// Also to note, this parser expect the input to not end with "\r\n".
+    /// You need to trim them first before passing it to this function.
     fn new(input: &'a str) -> IrcParser<'a> {
         IrcParser {
             iter: input.char_indices().peekable(),
@@ -297,6 +313,8 @@ impl<'a> IrcParser<'a> {
         }
     }
 
+    /// Skip whitespace, usually used when reading a word.
+    /// Skip any ascii whitespace char until we peek into non-whitespace char.
     fn skip_whitespace(&mut self) {
         while let Some(c) = self.peek() {
             if !c.is_ascii_whitespace() {
@@ -306,6 +324,7 @@ impl<'a> IrcParser<'a> {
         }
     }
 
+    /// Skip any word. Word in here defined as any non-whitespace character.
     fn skip_word(&mut self) {
         while let Some(c) = self.peek() {
             if c.is_ascii_whitespace() {
@@ -315,10 +334,12 @@ impl<'a> IrcParser<'a> {
         }
     }
 
+    /// Peek current character.
     fn peek(&mut self) -> Option<char> {
         self.iter.peek().map(|&(_, c)| c)
     }
 
+    /// Consume a single character. Also update the marker.
     fn consume_char(&mut self) {
         self.iter.next();
 
@@ -329,6 +350,7 @@ impl<'a> IrcParser<'a> {
         }
     }
 
+    /// Parse any word that start with that character. The starting character isn't included.
     fn parse_word_if_start_with(&mut self, start_char: char) -> Option<String> {
         self.skip_whitespace();
         match self.peek() {
@@ -343,6 +365,7 @@ impl<'a> IrcParser<'a> {
         }
     }
 
+    /// Parse a single word and return them.
     fn parse_word(&mut self) -> Option<String> {
         self.skip_whitespace();
         let start = self.marker;
@@ -355,6 +378,7 @@ impl<'a> IrcParser<'a> {
         }
     }
 
+    /// Parse params in the irc protocol. Param can be a single word or :rest of the line
     fn parse_params(&mut self) -> Vec<String> {
         let mut params = Vec::new();
 
