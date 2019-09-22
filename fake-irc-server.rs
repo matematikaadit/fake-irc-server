@@ -138,16 +138,18 @@ fn process_stream(stream: TcpStream, port: usize) {
 
         match &message {
             IrcMessage { command, params, .. } if upcase_eq(&command, "NICK") => {
-                nick = Some(get_or_default(params, 0));
+                nick = params.get(0).cloned();
             },
             IrcMessage { command, params, .. } if upcase_eq(&command, "USER") => {
-                user = Some(get_or_default(params, 0));
-                real = Some(get_or_default(params, 3));
+                user = params.get(0).cloned();
+                real = params.get(3).cloned();
             },
             IrcMessage { command, params, .. } if upcase_eq(&command, "PING") => {
+                let param = params.get(0).cloned().unwrap_or_default();
+
                 send_message!(reader.get_mut(),
                               ":localhost PONG {param}",
-                              param=get_or_default(params, 0)
+                              param=param
                 );
             },
             _ => (),
@@ -202,10 +204,6 @@ fn process_stream(stream: TcpStream, port: usize) {
 
 
     // helper functions
-
-    fn get_or_default(v: &[String], i: usize) -> String {
-        v.get(i).cloned().unwrap_or_default()
-    }
 
     fn upcase_eq(left: &str, right: &str) -> bool {
         &left.to_ascii_uppercase() == right
