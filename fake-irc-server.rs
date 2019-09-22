@@ -151,8 +151,10 @@ fn process_stream(stream: TcpStream, port: usize, sender: Sender<TcpStream>) {
             IrcMessage { command, params, .. } if upcase_eq(&command, "PING") => {
                 let param = params.get(0).cloned().unwrap_or_default();
 
+                // Not using the send_message! macro since we don't want it to be
+                // logged. The CRLF is important, don't forget it.
                 try_expect!(
-                    write!(reader.get_mut(), ":localhost PONG {param}", param=param),
+                    write!(reader.get_mut(), ":localhost PONG {param}\r\n", param=param),
                     "Can't write to the TcpStream"
                 );
             },
